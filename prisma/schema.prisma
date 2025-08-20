@@ -1,0 +1,194 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+model User {
+  id            String          @id @default(cuid())
+  name          String?
+  email         String          @unique
+  emailVerified DateTime?
+  image         String?
+  accounts      Account[]
+  role          UserRole        @default(USER)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  isBlocked     Boolean         @default(false)
+  UserActionLog UserActionLog[]
+  Deal          Deal[]
+}
+
+model Account {
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([provider, providerAccountId])
+}
+
+model Deal {
+  id              String        @id @default(cuid())
+  brokerage       String
+  firstName       String?
+  lastName        String?
+  email           String?
+  linkedinUrl     String?
+  workPhone       String?
+  dealCaption     String
+  revenue         Float
+  ebitda          Float
+  title           String?
+  dealTeaser      String?
+  grossRevenue    Float?
+  askingPrice     Float?
+  ebitdaMargin    Float
+  industry        String
+  dealType        DealType      @default(MANUAL)
+  sourceWebsite   String
+  companyLocation String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @default(now()) @updatedAt
+  SIM             SIM[]
+  AiScreening     AiScreening[]
+
+  bitrixId        String?
+  bitrixCreatedAt DateTime?
+
+  userId       String?
+  user         User?          @relation(fields: [userId], references: [id])
+  POC          POC[]
+  DealDocument DealDocument[]
+  Employee     Employee[]
+}
+
+model DealDocument {
+  id          String               @id @default(cuid())
+  dealId      String
+  title       String
+  description String?
+  category    DealDocumentCategory @default(OTHER)
+  deal        Deal                 @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  documentUrl String
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+}
+
+enum DealDocumentCategory {
+  LEGAL
+  DOCUMENTATION
+  MARKETING
+  INVESTOR_RELATIONSHIPS
+  TECHNICAL
+  TOOLS
+  LEGISLATION
+  RESEARCH
+  PROSPECTUS
+  FINANCIALS
+  OTHER
+}
+
+model POC {
+  id        String  @id @default(cuid())
+  name      String
+  workPhone String?
+  email     String
+  Deal      Deal?   @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  dealId    String?
+}
+
+model SIM {
+  id        String    @id @default(cuid())
+  title     String
+  caption   String
+  status    SIMStatus
+  fileName  String
+  fileType  String
+  fileUrl   String
+  dealId    String
+  deal      Deal      @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Questionnaire {
+  id         String   @id @default(cuid())
+  fileUrl    String
+  title      String
+  purpose    String
+  author     String
+  version    String
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@map("questionnaires")
+}
+
+enum DealType {
+  SCRAPED
+  MANUAL
+  AI_INFERRED
+}
+
+enum SIMStatus {
+  IN_PROGRESS
+  COMPLETED
+}
+
+model AiScreening {
+  id          String    @id @default(cuid())
+  dealId      String
+  deal        Deal      @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  title       String
+  explanation String
+  score       Int?
+  content     String?
+  sentiment   Sentiment @default(NEUTRAL)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+enum Sentiment {
+  POSITIVE
+  NEUTRAL
+  NEGATIVE
+}
+
+model UserActionLog {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  title     String
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Employee {
+  id   String @id @default(cuid())
+  name String
+
+  Deal   Deal?   @relation(fields: [dealId], references: [id])
+  dealId String?
+}
