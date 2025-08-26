@@ -9,6 +9,8 @@
   },
   "scripts": {
     "start": "bun --watch index.ts",
+    "start:prod": "bun index.ts",
+    "build": "bun run prisma:generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
