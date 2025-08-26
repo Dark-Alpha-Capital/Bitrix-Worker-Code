@@ -55,7 +55,7 @@ jobs:
             --concurrency=80 \
             --execution-environment=gen2 \
             --cpu-boost \
-            --http2 \
+            --use-http2 \
             --allow-unauthenticated \
             --set-env-vars "PORT=8080" \
             --update-env-vars "PORT=8080"
