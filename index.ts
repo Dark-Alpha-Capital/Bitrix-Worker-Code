@@ -8,29 +8,10 @@ import { z } from "zod";
 // Constants
 const REDIS_QUEUE_NAME = "dealListings";
 const REDIS_PUBLISH_CHANNEL = "problem_done";
-const WORKER_DELAY_MS = 5000;
+const WORKER_DELAY_MS = 2000;
 const DEFAULT_PORT = 8080;
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 1000;
 
 // Types
-interface DealInformation {
-  id: string;
-  brokerage: string;
-  firstName: string;
-  lastName: string;
-  linkedinUrl: string;
-  workPhone: string;
-  dealCaption: string;
-  dealType: string;
-  revenue: number;
-  ebitda: number;
-  ebitdaMargin: number;
-  industry: string;
-  sourceWebsite: string;
-  companyLocation: string;
-}
-
 interface Submission {
   id: string;
   userId: string;
@@ -58,86 +39,28 @@ interface AIScreeningResult {
   explanation: string;
 }
 
-// Global variables for cleanup
-let redisReconnectInterval: NodeJS.Timeout | null = null;
-let isShuttingDown = false;
-
-// Redis client configuration
+// Redis client
 const redisClient = createClient({
   url: process.env.REDIS_URL,
-  socket: {
-    reconnectStrategy: (retries) => {
-      if (retries > 10) {
-        console.error("Max Redis reconnection attempts reached");
-        return new Error("Max reconnection attempts reached");
-      }
-      return Math.min(retries * 100, 3000);
-    },
-  },
 });
 
 redisClient.on("error", (error) => {
-  console.error("Redis client error:", error);
+  console.error("Redis error:", error);
 });
 
 redisClient.on("connect", () => {
-  console.log("Redis client connected successfully");
+  console.log("Redis connected");
 });
 
-redisClient.on("ready", () => {
-  console.log("Redis client ready");
-});
-
-redisClient.on("end", () => {
-  console.log("Redis client connection ended");
-});
-
-// Graceful shutdown handler
-const gracefulShutdown = async (signal: string) => {
-  console.log(`\n🛑 Received ${signal}. Starting graceful shutdown...`);
-  isShuttingDown = true;
-
-  try {
-    // Clear intervals
-    if (redisReconnectInterval) {
-      clearInterval(redisReconnectInterval);
-      redisReconnectInterval = null;
-    }
-
-    // Close Redis connection
-    if (redisClient.isOpen) {
-      await redisClient.quit();
-      console.log("✅ Redis connection closed");
-    }
-
-    // Close Prisma connection
-    await prismaDB.$disconnect();
-    console.log("✅ Database connection closed");
-
-    console.log("✅ Graceful shutdown completed");
-    process.exit(0);
-  } catch (error) {
-    console.error("❌ Error during graceful shutdown:", error);
-    process.exit(1);
-  }
-};
-
-// Handle shutdown signals
-process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-process.on("SIGINT", () => gracefulShutdown("SIGINT"));
-
-// HTTP server for Cloud Run
-const resolvedPort = Number.parseInt(process.env.PORT || `${DEFAULT_PORT}`, 10);
-
+// HTTP server for health checks
+const port = Number(process.env.PORT) || DEFAULT_PORT;
 const server = Bun.serve({
-  port: Number.isFinite(resolvedPort) ? resolvedPort : DEFAULT_PORT,
+  port,
   fetch(req) {
     const url = new URL(req.url);
-
     if (url.pathname === "/health" || url.pathname === "/") {
       return new Response("OK", { status: 200 });
     }
-
     return new Response("Not Found", { status: 404 });
   },
 });
@@ -145,94 +68,32 @@ const server = Bun.serve({
 console.log(`HTTP server listening on port ${server.port}`);
 
 /**
- * Extracts deal information from submission
- */
-function extractDealInformation(submission: Submission): DealInformation {
-  console.log("🔍 Extracting deal information for submission:", submission.id);
-  console.log("📊 Deal details:", {
-    brokerage: submission.brokerage,
-    dealType: submission.dealType,
-    revenue: submission.revenue,
-    ebitda: submission.ebitda,
-    industry: submission.industry,
-  });
-
-  const dealInfo = {
-    id: submission.id,
-    brokerage: submission.brokerage,
-    firstName: submission.firstName,
-    lastName: submission.lastName,
-    linkedinUrl: submission.linkedinUrl,
-    workPhone: submission.workPhone,
-    dealCaption: submission.dealCaption,
-    dealType: submission.dealType,
-    revenue: submission.revenue,
-    ebitda: submission.ebitda,
-    ebitdaMargin: submission.ebitdaMargin,
-    industry: submission.industry,
-    sourceWebsite: submission.sourceWebsite,
-    companyLocation: submission.companyLocation,
-  };
-
-  console.log("✅ Deal information extracted successfully");
-  return dealInfo;
-}
-
-/**
- * Processes individual content chunks and generates summaries
+ * Process content chunks and generate summaries
  */
 async function processContentChunks(
   chunks: string[],
-  dealInformation: DealInformation
+  dealInfo: any
 ): Promise<string[]> {
-  console.log("🔄 Starting content chunk processing...");
-  console.log("📝 Total chunks to process:", chunks.length);
+  const summaries: string[] = [];
 
-  const intermediateSummaries: string[] = [];
-
-  for (let i = 0; i < chunks.length; i++) {
-    if (isShuttingDown) {
-      console.log("🛑 Shutdown requested, stopping chunk processing");
-      break;
-    }
-
-    const chunk = chunks[i];
-    if (!chunk) {
-      continue;
-    }
-
+  for (const chunk of chunks) {
     try {
-      console.log(`\n📄 Processing chunk ${i + 1}/${chunks.length}`);
-      console.log(`📏 Chunk length: ${chunk.length} characters`);
-      console.log(`🔤 Chunk preview: ${chunk.substring(0, 100)}...`);
-
       const summary = await generateText({
         model: openai("gpt-4o-mini"),
-        prompt: `Evaluate this listing ${JSON.stringify(
-          dealInformation
-        )}: ${chunk}`,
+        prompt: `Evaluate this listing ${JSON.stringify(dealInfo)}: ${chunk}`,
       });
-
-      console.log(`✅ Chunk ${i + 1} evaluation completed`);
-      console.log(`📝 Summary length: ${summary.text.length} characters`);
-      console.log(`📋 Summary preview: ${summary.text.substring(0, 150)}...`);
-
-      intermediateSummaries.push(summary.text);
+      summaries.push(summary.text);
     } catch (error) {
-      console.error(`❌ Error processing chunk ${i + 1}:`, error);
-      // Continue with other chunks instead of failing completely
-      intermediateSummaries.push(`[Error processing chunk ${i + 1}]`);
+      console.error("Error processing chunk:", error);
+      summaries.push(`[Error processing chunk]`);
     }
   }
 
-  console.log(
-    `🎯 Content chunk processing completed. Generated ${intermediateSummaries.length} summaries`
-  );
-  return intermediateSummaries;
+  return summaries;
 }
 
 /**
- * Generates final AI screening result
+ * Generate final AI screening result
  */
 async function generateFinalSummary(
   combinedSummary: string
@@ -248,7 +109,6 @@ async function generateFinalSummary(
         explanation: z.string(),
       }),
     });
-
     return result.object;
   } catch (error) {
     console.error("Error generating final summary:", error);
@@ -257,7 +117,7 @@ async function generateFinalSummary(
 }
 
 /**
- * Saves AI screening result to database
+ * Save AI screening result to database
  */
 async function saveAIScreeningResult(
   submissionId: string,
@@ -283,17 +143,12 @@ async function saveAIScreeningResult(
 }
 
 /**
- * Publishes completion notification to Redis
+ * Publish completion notification
  */
 async function publishCompletionNotification(
   submission: Submission
-): Promise<boolean> {
+): Promise<void> {
   try {
-    if (!redisClient.isOpen) {
-      console.warn("Redis not connected, skipping notification");
-      return false;
-    }
-
     await redisClient.publish(
       REDIS_PUBLISH_CHANNEL,
       JSON.stringify({
@@ -303,209 +158,103 @@ async function publishCompletionNotification(
         productName: submission.name,
       })
     );
-    return true;
   } catch (error) {
-    console.error("Error publishing completion notification:", error);
-    return false;
+    console.error("Error publishing notification:", error);
   }
 }
 
 /**
- * Main function to process a submission
+ * Process a single submission
  */
 async function processSubmission(submission: Submission): Promise<boolean> {
-  console.log("Processing submission:", submission.id);
-
   try {
-    // Extract deal information
-    const dealInformation = extractDealInformation(submission);
+    console.log(`Processing submission: ${submission.id}`);
 
     // Split content into chunks
     const chunks = await splitContentIntoChunks(submission.screenerContent);
-    console.log(`Content split into ${chunks.length} chunks`);
-
     if (chunks.length === 0) {
-      console.warn(
-        "No content chunks generated for submission:",
-        submission.id
-      );
+      console.warn("No content chunks generated");
       return false;
     }
 
-    // Process content chunks
-    const intermediateSummaries = await processContentChunks(
-      chunks,
-      dealInformation
-    );
+    // Process chunks
+    const summaries = await processContentChunks(chunks, submission);
+    const combinedSummary = summaries.join("\n\n=== Next Section ===\n\n");
 
-    // Combine summaries
-    const combinedSummary = intermediateSummaries.join(
-      "\n\n=== Next Section ===\n\n"
-    );
-
-    // Generate final summary
-    const finalSummary = await generateFinalSummary(combinedSummary);
-    if (!finalSummary) {
-      console.error(
-        "Failed to generate final summary for submission:",
-        submission.id
-      );
+    // Generate final result
+    const finalResult = await generateFinalSummary(combinedSummary);
+    if (!finalResult) {
+      console.error("Failed to generate final summary");
       return false;
     }
-
-    console.log("Final summary generated:", finalSummary);
 
     // Save to database
     const saveSuccess = await saveAIScreeningResult(
       submission.id,
-      finalSummary,
+      finalResult,
       combinedSummary
     );
 
-    if (!saveSuccess) {
-      console.error(
-        "Failed to save AI screening result for submission:",
-        submission.id
-      );
-      return false;
+    if (saveSuccess) {
+      await publishCompletionNotification(submission);
+      console.log(`Submission ${submission.id} processed successfully`);
+      return true;
     }
 
-    // Publish completion notification
-    const publishSuccess = await publishCompletionNotification(submission);
-    if (!publishSuccess) {
-      console.error(
-        "Failed to publish completion notification for submission:",
-        submission.id
-      );
-      // Don't return false here as the main processing was successful
-    }
-
-    console.log("Submission processed successfully:", submission.id);
-    return true;
+    return false;
   } catch (error) {
-    console.error("Error processing submission:", submission.id, error);
+    console.error(`Error processing submission ${submission.id}:`, error);
     return false;
   }
-}
-
-/**
- * Safely process Redis operations with retries
- */
-async function safeRedisOperation<T>(
-  operation: () => Promise<T>,
-  retries = MAX_RETRIES
-): Promise<T | null> {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      if (!redisClient.isOpen) {
-        await redisClient.connect();
-      }
-      return await operation();
-    } catch (error) {
-      console.error(`Redis operation attempt ${attempt} failed:`, error);
-      if (attempt === retries) {
-        return null;
-      }
-      await new Promise((resolve) =>
-        setTimeout(resolve, RETRY_DELAY_MS * attempt)
-      );
-    }
-  }
-  return null;
 }
 
 /**
  * Main worker function
  */
 async function startWorker(): Promise<void> {
-  console.log("🚀 Worker starting...");
+  console.log("Starting worker...");
 
+  // Connect to Redis
   try {
-    // Initial Redis connection
     await redisClient.connect();
-    console.log("✅ Initial Redis connection established");
+    console.log("Connected to Redis");
   } catch (error) {
-    console.error("❌ Failed to establish initial Redis connection:", error);
-    // Continue anyway, the reconnection logic will handle it
+    console.error("Failed to connect to Redis:", error);
+    return;
   }
 
-  // Set up Redis reconnection interval
-  redisReconnectInterval = setInterval(async () => {
-    if (isShuttingDown) return;
-
+  // Main processing loop
+  while (true) {
     try {
+      // Check if Redis is connected
       if (!redisClient.isOpen) {
+        console.log("Redis disconnected, reconnecting...");
         await redisClient.connect();
-        console.log("✅ Redis reconnected");
       }
-    } catch (error) {
-      console.error("❌ Redis reconnection failed:", error);
-    }
-  }, 10_000);
 
-  console.log("🔄 Starting main processing loop...");
-
-  let consecutiveErrors = 0;
-  const maxConsecutiveErrors = 5;
-
-  while (!isShuttingDown) {
-    try {
-      // Process submissions from Redis queue
-      const submission = await safeRedisOperation(() =>
-        redisClient.rPop(REDIS_QUEUE_NAME)
-      );
+      // Get submission from queue
+      const submission = await redisClient.rPop(REDIS_QUEUE_NAME);
 
       if (submission) {
-        const dealListingData: Submission = JSON.parse(submission);
-        console.log(`📥 Processing submission: ${dealListingData.id}`);
+        const submissionData: Submission = JSON.parse(submission);
+        await processSubmission(submissionData);
 
-        // Add delay between processing
+        // Small delay between processing
         await new Promise((resolve) => setTimeout(resolve, WORKER_DELAY_MS));
-
-        // Process the submission
-        const success = await processSubmission(dealListingData);
-
-        if (!success) {
-          console.warn("❌ Submission processing failed:", dealListingData.id);
-          consecutiveErrors++;
-        } else {
-          consecutiveErrors = 0; // Reset on success
-        }
+      } else {
+        // No submissions, wait a bit before checking again
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       }
-
-      // Reset consecutive errors if no submission was found
-      if (!submission) {
-        consecutiveErrors = 0;
-      }
-
-      // Check if we have too many consecutive errors
-      if (consecutiveErrors >= maxConsecutiveErrors) {
-        console.error(
-          `❌ Too many consecutive errors (${consecutiveErrors}), pausing worker`
-        );
-        await new Promise((resolve) => setTimeout(resolve, 30000)); // Pause for 30 seconds
-        consecutiveErrors = 0;
-      }
-
-      // Small delay to prevent tight loop
-      await new Promise((resolve) => setTimeout(resolve, 100));
     } catch (error) {
-      console.error("❌ Error in main worker loop:", error);
-      consecutiveErrors++;
-
-      // Add delay before retrying to prevent rapid error loops
+      console.error("Error in worker loop:", error);
       await new Promise((resolve) => setTimeout(resolve, 5000));
     }
   }
-
-  console.log("🛑 Worker loop stopped due to shutdown signal");
 }
 
-// Start the worker without exiting the process on failure so Cloud Run stays healthy
+// Start the worker
 startWorker().catch((error) => {
-  console.error("❌ Worker startup error (continuing to serve HTTP):", error);
+  console.error("Worker startup error:", error);
 });
 
-// Health check endpoint for Cloud Run
-console.log("🏥 Health check endpoint available at /health");
-console.log("📊 Worker status: Starting...");
+console.log("Worker started");
