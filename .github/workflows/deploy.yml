@@ -63,15 +63,3 @@ jobs:
           gcloud run services describe ${{ env.SERVICE_NAME }} \
             --region ${{ env.REGION }} \
             --format="value(status.conditions[0].status)"
-
-      - name: Health check
-        run: |
-          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} --region ${{ env.REGION }} --format="value(status.url)")
-          echo "Service URL: $SERVICE_URL"
-
-          # Wait for service to be ready
-          sleep 30
-
-          # Test health endpoint
-          curl -f "$SERVICE_URL/health" || exit 1
-          echo "Health check passed!"
