@@ -57,8 +57,6 @@ jobs:
             --cpu-boost \
             --use-http2 \
             --allow-unauthenticated \
-            --set-env-vars "PORT=8080" \
-            --update-env-vars "PORT=8080"
 
       - name: Wait for deployment
         run: |
