@@ -11,5 +11,7 @@ RUN bun install
 # Copy the rest of your application code
 COPY . .
 
+EXPOSE 8080
+
 # Start the worker using Bun
 CMD ["bun", "index.ts"]
