@@ -47,4 +47,3 @@ jobs:
             --region ${{ env.REGION }} \
             --set-env-vars "REDIS_URL=${{ secrets.REDIS_URL }}, NODE_ENV=production, DATABASE_URL=${{ secrets.DATABASE_URL }},AI_API_KEY=${{ secrets.AI_API_KEY }}" \
             --timeout=900s \
-            
