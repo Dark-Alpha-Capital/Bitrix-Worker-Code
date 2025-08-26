@@ -70,7 +70,7 @@ redisClient.on("connect", () => {
 });
 
 // HTTP server for Cloud Run
-const port = parseInt(process.env.PORT || "8081");
+const port = parseInt(process.env.PORT as string);
 
 const server = Bun.serve({
   port,
