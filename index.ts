@@ -10,6 +10,26 @@ redisClient.on("error", (error) => {
   console.log("redis client error", error);
 });
 
+// Add HTTP server for Cloud Run
+const port = process.env.PORT || 8080;
+
+// Create a simple HTTP server
+const server = Bun.serve({
+  port: parseInt(port.toString()),
+  fetch(req) {
+    const url = new URL(req.url);
+
+    // Health check endpoint
+    if (url.pathname === "/health" || url.pathname === "/") {
+      return new Response("OK", { status: 200 });
+    }
+
+    return new Response("Not Found", { status: 404 });
+  },
+});
+
+console.log(`HTTP server listening on port ${port}`);
+
 async function processSubmission(submission: any) {
   console.log("inside process submissions");
 

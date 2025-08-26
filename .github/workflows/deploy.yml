@@ -50,4 +50,7 @@ jobs:
             --cpu=1 \
             --memory=512Mi \
             --min-instances=0 \
-            --max-instances=10
+            --max-instances=10 \
+            --port=8080 \
+            --health-checks=/health \
+            --startup-cpu-boost
