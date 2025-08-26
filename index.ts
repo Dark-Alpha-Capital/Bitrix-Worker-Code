@@ -9,7 +9,7 @@ import { z } from "zod";
 const REDIS_QUEUE_NAME = "dealListings";
 const REDIS_PUBLISH_CHANNEL = "problem_done";
 const WORKER_DELAY_MS = 5000;
-const DEFAULT_PORT = 8081;
+const DEFAULT_PORT = 8080;
 
 // Types
 interface DealInformation {
@@ -70,10 +70,10 @@ redisClient.on("connect", () => {
 });
 
 // HTTP server for Cloud Run
-const port = parseInt(process.env.PORT as string);
+const resolvedPort = Number.parseInt(process.env.PORT || `${DEFAULT_PORT}`, 10);
 
 const server = Bun.serve({
-  port,
+  port: Number.isFinite(resolvedPort) ? resolvedPort : DEFAULT_PORT,
   fetch(req) {
     const url = new URL(req.url);
 
@@ -85,7 +85,7 @@ const server = Bun.serve({
   },
 });
 
-console.log(`HTTP server listening on port ${port}`);
+console.log(`HTTP server listening on port ${server.port}`);
 
 /**
  * Extracts deal information from submission
@@ -326,13 +326,20 @@ async function processSubmission(submission: Submission): Promise<boolean> {
 async function startWorker(): Promise<void> {
   console.log("Worker started");
 
-  try {
-    await redisClient.connect();
-    console.log("Redis client connected successfully");
-  } catch (error) {
-    console.error("Failed to connect to Redis:", error);
-    throw error;
-  }
+  // Keep trying to connect to Redis in the background without killing the process
+  const connectRedis = async () => {
+    try {
+      if (!redisClient.isOpen) {
+        await redisClient.connect();
+        console.log("Redis client connected successfully");
+      }
+    } catch (error) {
+      console.error("Failed to connect to Redis:", error);
+    }
+  };
+
+  await connectRedis();
+  const redisReconnectInterval = setInterval(connectRedis, 10_000);
 
   console.log("Starting main processing loop...");
 
@@ -366,8 +373,7 @@ async function startWorker(): Promise<void> {
   }
 }
 
-// Start the worker
+// Start the worker without exiting the process on failure so Cloud Run stays healthy
 startWorker().catch((error) => {
-  console.error("Fatal error in worker:", error);
-  process.exit(1);
+  console.error("Worker startup error (continuing to serve HTTP):", error);
 });
