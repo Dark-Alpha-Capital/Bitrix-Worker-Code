@@ -48,11 +48,19 @@ model Account {
   @@id([provider, providerAccountId])
 }
 
+enum DealStatus {
+  AVAILABLE
+  SOLD
+  UNDER_CONTRACT
+  NOT_SPECIFIED
+}
+
 model Deal {
   id              String        @id @default(cuid())
   brokerage       String
   firstName       String?
   lastName        String?
+  tags            String[]      @default([])
   email           String?
   linkedinUrl     String?
   workPhone       String?
@@ -72,6 +80,12 @@ model Deal {
   updatedAt       DateTime      @default(now()) @updatedAt
   SIM             SIM[]
   AiScreening     AiScreening[]
+
+  bitrixLink  String?
+  status      DealStatus @default(NOT_SPECIFIED)
+  isReviewed  Boolean    @default(false)
+  isPublished Boolean    @default(false)
+  seen        Boolean    @default(false)
 
   bitrixId        String?
   bitrixCreatedAt DateTime?
@@ -154,6 +168,15 @@ enum DealType {
 enum SIMStatus {
   IN_PROGRESS
   COMPLETED
+}
+
+model Screener {
+  id        String   @id @default(cuid())
+  name      String
+  content   String
+  fileUrl   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model AiScreening {
