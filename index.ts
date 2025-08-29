@@ -10,6 +10,8 @@ const REDIS_QUEUE_NAME = "dealListings";
 const REDIS_PUBLISH_CHANNEL = "problem_done";
 const WORKER_DELAY_MS = 2000;
 const DEFAULT_PORT = 8080;
+const REDIS_RETRY_DELAY = 5000;
+const MAX_RETRIES = 3;
 
 // Types
 interface Submission {
@@ -39,9 +41,19 @@ interface AIScreeningResult {
   explanation: string;
 }
 
-// Redis client
+// Redis client with better error handling
 const redisClient = createClient({
   url: process.env.REDIS_URL,
+  socket: {
+    reconnectStrategy: (retries) => {
+      if (retries > 10) {
+        console.error("Max Redis reconnection attempts reached");
+        return new Error("Max reconnection attempts reached");
+      }
+      return Math.min(retries * 1000, 3000);
+    },
+    connectTimeout: 10000,
+  },
 });
 
 redisClient.on("error", (error) => {
@@ -78,6 +90,83 @@ const server = Bun.serve({
 });
 
 console.log(`HTTP server listening on port ${server.port}`);
+
+/**
+ * Check if Redis is properly connected and responsive
+ */
+async function isRedisHealthy(): Promise<boolean> {
+  try {
+    if (!redisClient.isOpen) {
+      return false;
+    }
+
+    // Test with a simple ping command
+    await redisClient.ping();
+    return true;
+  } catch (error) {
+    console.error("Redis health check failed:", error);
+    return false;
+  }
+}
+
+/**
+ * Safely reconnect to Redis
+ */
+async function reconnectRedis(): Promise<boolean> {
+  try {
+    console.log("Attempting to reconnect to Redis...");
+
+    if (redisClient.isOpen) {
+      await redisClient.disconnect();
+    }
+
+    await redisClient.connect();
+    await redisClient.ping();
+    console.log("Redis reconnected successfully");
+    return true;
+  } catch (error) {
+    console.error("Failed to reconnect to Redis:", error);
+    return false;
+  }
+}
+
+/**
+ * Safely pop from Redis queue with retry logic
+ */
+async function safePopFromQueue(): Promise<string | null> {
+  let retries = 0;
+
+  while (retries < MAX_RETRIES) {
+    try {
+      if (!(await isRedisHealthy())) {
+        console.log(`Redis not healthy, attempt ${retries + 1}/${MAX_RETRIES}`);
+        if (!(await reconnectRedis())) {
+          retries++;
+          await new Promise((resolve) =>
+            setTimeout(resolve, REDIS_RETRY_DELAY)
+          );
+          continue;
+        }
+      }
+
+      const result = await redisClient.lPop(REDIS_QUEUE_NAME);
+      return result;
+    } catch (error) {
+      console.error(
+        `Error popping from queue (attempt ${retries + 1}/${MAX_RETRIES}):`,
+        error
+      );
+      retries++;
+
+      if (retries < MAX_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, REDIS_RETRY_DELAY));
+      }
+    }
+  }
+
+  console.error("Failed to pop from queue after all retries");
+  return null;
+}
 
 /**
  * Process content chunks and generate summaries
@@ -276,6 +365,11 @@ async function processSubmission(submission: Submission): Promise<boolean> {
  */
 async function checkQueueStatus(): Promise<void> {
   try {
+    if (!(await isRedisHealthy())) {
+      console.log("Redis not healthy, skipping queue status check");
+      return;
+    }
+
     const queueLength = await redisClient.lLen(REDIS_QUEUE_NAME);
     console.log(
       `Current queue length for '${REDIS_QUEUE_NAME}': ${queueLength}`
@@ -326,36 +420,36 @@ async function startWorker(): Promise<void> {
 
   let processedCount = 0;
   let errorCount = 0;
+  let consecutiveErrors = 0;
 
   console.log("=== Starting main processing loop ===");
 
   // Main processing loop
   while (true) {
     try {
-      // Check if Redis is connected
-      if (!redisClient.isOpen) {
-        console.log("Redis disconnected, attempting to reconnect...");
-        try {
-          await redisClient.connect();
-          console.log("Redis reconnected successfully");
-        } catch (reconnectError) {
-          console.error("Failed to reconnect to Redis:", reconnectError);
-          await new Promise((resolve) => setTimeout(resolve, 10000)); // Wait 10 seconds before retry
+      // Check if Redis is healthy
+      if (!(await isRedisHealthy())) {
+        console.log("Redis not healthy, attempting to reconnect...");
+        if (!(await reconnectRedis())) {
+          console.log("Reconnection failed, waiting before retry...");
+          await new Promise((resolve) =>
+            setTimeout(resolve, REDIS_RETRY_DELAY)
+          );
           continue;
         }
       }
 
-      // Check queue status periodically
       if (processedCount % 10 === 0) {
         await checkQueueStatus();
       }
 
-      // Get submission from queue
       console.log("Attempting to pop submission from queue...");
-      const submission = await redisClient.rPop(REDIS_QUEUE_NAME);
+      const submission = await safePopFromQueue();
 
       if (submission) {
         console.log("Submission found in queue, processing...");
+        consecutiveErrors = 0; // Reset error counter on success
+
         let submissionData: Submission;
 
         try {
@@ -394,10 +488,24 @@ async function startWorker(): Promise<void> {
     } catch (error) {
       console.error("Error in worker loop:", error);
       errorCount++;
+      consecutiveErrors++;
+
       console.log(
-        `=== Processing stats: ${processedCount} successful, ${errorCount} errors ===`
+        `=== Processing stats: ${processedCount} successful, ${errorCount} errors (${consecutiveErrors} consecutive) ===`
       );
-      await new Promise((resolve) => setTimeout(resolve, 5000));
+
+      // If we have too many consecutive errors, wait longer
+      const waitTime = consecutiveErrors > 5 ? 10000 : 5000;
+      await new Promise((resolve) => setTimeout(resolve, waitTime));
+
+      // Try to reconnect if we have persistent errors
+      if (consecutiveErrors > 10) {
+        console.log(
+          "Too many consecutive errors, attempting Redis reconnection..."
+        );
+        await reconnectRedis();
+        consecutiveErrors = 0;
+      }
     }
   }
 }
@@ -405,13 +513,21 @@ async function startWorker(): Promise<void> {
 // Graceful shutdown handling
 process.on("SIGINT", async () => {
   console.log("Received SIGINT, shutting down gracefully...");
-  await redisClient.quit();
+  try {
+    await redisClient.quit();
+  } catch (error) {
+    console.error("Error during shutdown:", error);
+  }
   process.exit(0);
 });
 
 process.on("SIGTERM", async () => {
   console.log("Received SIGTERM, shutting down gracefully...");
-  await redisClient.quit();
+  try {
+    await redisClient.quit();
+  } catch (error) {
+    console.error("Error during shutdown:", error);
+  }
   process.exit(0);
 });
 
