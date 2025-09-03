@@ -1,4 +1,5 @@
 import { createClient } from "redis";
+import http from "http";
 
 import prismaDB from "./lib/prisma";
 import { splitContentIntoChunks } from "./lib/utils";
@@ -237,6 +238,23 @@ async function start() {
   redis.on("error", (e) => console.error("Redis error", e));
   await redis.connect();
   console.log("Worker connected to Redis");
+
+  // Start a simple HTTP server for Cloud Run health checks
+  const port = Number(process.env.PORT) || 8080;
+  const server = http.createServer((req, res) => {
+    if (!req.url) return;
+    if (req.url === "/health" || req.url === "/") {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("OK");
+    } else {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      res.end("Not Found");
+    }
+  });
+
+  server.listen(port, () =>
+    console.log(`Worker HTTP server listening on :${port}`)
+  );
 
   while (true) {
     try {
