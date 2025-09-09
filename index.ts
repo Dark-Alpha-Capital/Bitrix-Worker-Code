@@ -242,77 +242,45 @@ async function start() {
 
   const port = Number(process.env.PORT) || 8080;
 
-  // ✅ CHANGED: The HTTP server is now the core of the worker
   const server = http.createServer(async (req, res) => {
     if (req.url === "/health") {
-      console.log("received a health check");
       res.writeHead(200, { "Content-Type": "text/plain" }).end("OK");
       return;
     }
 
-    // ✅ ADDED: This block handles the incoming job from Pub/Sub
-    if (req.method === "POST" && (req.url === "/" || req.url === "/process")) {
-      console.log("Recieved a post request on / route");
+    // ✅ This is the endpoint our Next.js app will "poke"
+    if (req.method === "POST" && req.url === "/process-queue") {
+      console.log("Received trigger. Starting to process Redis queue...");
 
-      let body = "";
-      req.on("data", (chunk) => {
-        body += chunk.toString();
-      });
+      try {
+        let itemsProcessed = 0;
+        // ✅ Loop until the queue is empty
+        while (true) {
+          const item = await redis.lPop(QUEUE);
 
-      req.on("end", async () => {
-        try {
-          console.log("Received a request from Pub/Sub.");
-
-          // The Pub/Sub message is in the request body.
-          // It's a JSON object where the actual data is a Base64 encoded string.
-          const pubSubMessage = JSON.parse(body);
-          if (!pubSubMessage.message || !pubSubMessage.message.data) {
-            throw new Error("Invalid Pub/Sub message format");
-          }
-
-          // 1. Decode the Base64 data to a Buffer
-          const dataBuffer = Buffer.from(pubSubMessage.message.data, "base64");
-          // 2. Convert the Buffer to a string (your original JSON payload)
-          const submissionString = dataBuffer.toString("utf-8");
-          // 3. Parse the string to get the submission object
-          const submission: Submission = JSON.parse(submissionString);
-
-          console.log("submission sent for processing", submission);
-
-          // This is your original processing logic
-          const success = await processSubmission(submission);
-
-          if (success) {
-            console.log("submission process successfully");
-
-            // You can still use Redis Pub/Sub to notify your frontend if you wish
-            await redis.publish(
-              DONE_CHANNEL,
-              JSON.stringify({
-                userId: submission.userId,
-                productId: submission.id,
-                status: "done",
-                productName: submission.title || submission.id,
-              })
-            );
-
-            // ✅ IMPORTANT: Send a success response to Pub/Sub
-            // This acknowledges the message so it isn't sent again.
-            res.writeHead(204).end();
+          if (item) {
+            // If we got an item, process it
+            const submission: Submission = JSON.parse(item);
+            await processSubmission(submission);
+            itemsProcessed++;
           } else {
-            console.log("an error occured when processing submission");
-
-            // A 500-level error will cause Pub/Sub to retry sending the message.
-            res.writeHead(500).end();
+            // If item is null, the queue is empty, so we stop.
+            console.log("Queue is empty.");
+            break;
           }
-        } catch (e) {
-          console.error("Error processing Pub/Sub message:", e);
-          res.writeHead(500).end();
         }
-      });
-    } else {
-      res.writeHead(404).end("Not Found");
+
+        res
+          .writeHead(200)
+          .end(`Processing complete. Items processed: ${itemsProcessed}`);
+      } catch (err) {
+        console.error("An error occurred while processing the queue:", err);
+        res.writeHead(500).end("Failed to process queue");
+      }
+      return;
     }
+
+    res.writeHead(404).end("Not Found");
   });
 
   server.listen(port, () =>
