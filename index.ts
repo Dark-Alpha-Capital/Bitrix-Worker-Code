@@ -1,50 +1,55 @@
-import { createClient } from "redis";
-import http from "http";
-
+import express from "express";
 import prismaDB from "./lib/prisma";
 import { splitContentIntoChunks } from "./lib/utils";
 import { generateObject, generateText } from "ai";
 import { openai } from "./lib/ai/available-models";
 import { z } from "zod";
+import { redisClient } from "./lib/redis";
 
-const QUEUE = "dealListings";
-const DONE_CHANNEL = "problem_done";
+const app = express();
+app.use(express.json());
 
-type Submission = {
-  id: string;
-  brokerage: string;
-  firstName: string;
-  lastName: string;
-  tags: string[];
-  email: string;
-  linkedinUrl: string;
-  workPhone: string;
-  dealCaption: string;
-  revenue: number;
-  ebitda: number;
-  title: string;
-  dealTeaser: string | null;
-  grossRevenue: number | null;
-  askingPrice: number | null;
-  ebitdaMargin: number;
-  industry: string;
-  dealType: string;
-  sourceWebsite: string;
-  companyLocation: string;
-  createdAt: string;
-  updatedAt: string;
-  bitrixLink: string | null;
-  status: string;
-  isReviewed: boolean;
-  isPublished: boolean;
-  seen: boolean;
-  bitrixId: string | null;
-  bitrixCreatedAt: string | null;
-  userId: string;
-  screenerId: string;
-  screenerContent: string;
-  screenerName: string;
-};
+// --------------------------------------
+// 🔹 Zod Schema for Submission Validation
+// --------------------------------------
+const submissionSchema = z.object({
+  id: z.string(),
+  brokerage: z.string(),
+  firstName: z.string(),
+  lastName: z.string(),
+  tags: z.array(z.string()),
+  email: z.string().email(),
+  linkedinUrl: z.string(),
+  workPhone: z.string(),
+  dealCaption: z.string(),
+  revenue: z.number(),
+  ebitda: z.number(),
+  title: z.string(),
+  dealTeaser: z.string().nullable(),
+  grossRevenue: z.number().nullable(),
+  askingPrice: z.number().nullable(),
+  ebitdaMargin: z.number(),
+  industry: z.string(),
+  dealType: z.string(),
+  sourceWebsite: z.string(),
+  companyLocation: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  bitrixLink: z.string().nullable(),
+  status: z.string(),
+  isReviewed: z.boolean(),
+  isPublished: z.boolean(),
+  seen: z.boolean(),
+  bitrixId: z.string().nullable(),
+  bitrixCreatedAt: z.string().nullable(),
+  userId: z.string(),
+  screenerId: z.string(),
+  screenerContent: z.string(),
+  screenerName: z.string(),
+  jobId: z.string(),
+});
+
+type Submission = z.infer<typeof submissionSchema>;
 
 interface AIScreeningResult {
   title: string;
@@ -53,17 +58,48 @@ interface AIScreeningResult {
   explanation: string;
 }
 
-/**
- * Generate final AI screening result
- */
+// --------------------------------------
+// 🔹 Helper: Send notification to WebSocket service with retry logic
+// --------------------------------------
+async function sendNotification(userId: string, title: string, status: string) {
+  const url = `${process.env.WEBSOCKET_URL}/notify`;
+  const body = { userId, title, status };
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      console.log(`🔔 Notification sent → ${title} (${status})`);
+      return;
+    } catch (error) {
+      console.error(`❌ Failed to send notification (attempt ${attempt}):`, error);
+      if (attempt === 2) {
+        console.error("❌ Notification could not be delivered after 2 attempts");
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
+  }
+}
+
+// --------------------------------------
+// 🔹 Generate final summarized AI screening
+// --------------------------------------
 async function generateFinalSummary(
   combinedSummary: string
 ): Promise<AIScreeningResult | null> {
   try {
     console.log("Generating final AI screening result...");
+
     const result = await generateObject({
       model: openai("gpt-4o-mini"),
-      prompt: `Combine the following summaries into a single summary: ${combinedSummary}`,
+      prompt: `Combine the following summaries into a single structured summary: ${combinedSummary}`,
       schema: z.object({
         title: z.string(),
         score: z.number(),
@@ -71,10 +107,7 @@ async function generateFinalSummary(
         explanation: z.string(),
       }),
     });
-    console.log(
-      "Final AI screening result generated successfully:",
-      result.object
-    );
+
     return result.object;
   } catch (error) {
     console.error("Error generating final summary:", error);
@@ -82,61 +115,37 @@ async function generateFinalSummary(
   }
 }
 
-/**
- * Save AI screening result to database
- */
+// --------------------------------------
+// 🔹 Save AI screening result in database
+// --------------------------------------
 async function saveAIScreeningResult(
   submissionId: string,
   result: AIScreeningResult,
   combinedSummary: string
-): Promise<boolean> {
-  try {
-    console.log(
-      `Saving AI screening result to database for submission: ${submissionId}`
-    );
-    await prismaDB.aiScreening.create({
-      data: {
-        dealId: submissionId,
-        title: result.title,
-        explanation: result.explanation,
-        score: result.score,
-        sentiment: result.sentiment,
-        content: combinedSummary,
-      },
-    });
-    console.log("AI screening result saved successfully to database");
-    return true;
-  } catch (error) {
-    console.error("Error saving AI screening result:", error);
-    return false;
-  }
+): Promise<void> {
+  await prismaDB.aiScreening.create({
+    data: {
+      dealId: submissionId,
+      title: result.title,
+      explanation: result.explanation,
+      score: result.score,
+      sentiment: result.sentiment,
+      content: combinedSummary,
+    },
+  });
 }
 
-/**
- * Process content chunks and generate summaries
- */
+// --------------------------------------
+// 🔹 Process text chunks using OpenAI
+// --------------------------------------
 async function processContentChunks(
   chunks: string[],
   dealInfo: Submission
 ): Promise<string[]> {
-  console.log(
-    `Processing ${chunks.length} content chunks for deal: ${dealInfo.id}`
-  );
   const summaries: string[] = [];
 
   for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    if (!chunk) {
-      console.warn(`Chunk ${i + 1} is undefined, skipping...`);
-      continue;
-    }
     try {
-      console.log(
-        `Processing chunk ${i + 1}/${chunks.length} (${
-          chunk.length
-        } characters)`
-      );
-
       const dealContext = {
         title: dealInfo.title,
         brokerage: dealInfo.brokerage,
@@ -146,25 +155,21 @@ async function processContentChunks(
         ebitdaMargin: dealInfo.ebitdaMargin,
         companyLocation: dealInfo.companyLocation,
         revenue: dealInfo.revenue,
-        caption: dealInfo.dealCaption,
         industry: dealInfo.industry,
       };
 
-      const prompt = `Based on this deal context: ${JSON.stringify(
+      const prompt = `Given this deal context: ${JSON.stringify(
         dealContext
-      )}, evaluate the following text: ${chunk}`;
+      )}, analyze the following section: ${chunks[i]}`;
 
       const summary = await generateText({
         system:
-          "You are an expert AI Assistant that specializes in deal sourcing, evaluation and private equity in general",
+          "You are an expert AI Assistant that specializes in deal sourcing, evaluation, and private equity.",
         model: openai("gpt-4o-mini"),
         prompt,
       });
 
-      console.log("summar generated by AI", summary.text);
-
       summaries.push(summary.text);
-      console.log(`Chunk ${i + 1} processed successfully`);
     } catch (error) {
       console.error(`Error processing chunk ${i + 1}:`, error);
       summaries.push(`[Error processing chunk]`);
@@ -174,182 +179,122 @@ async function processContentChunks(
   return summaries;
 }
 
-/**
- * Process a single submission
- */
-async function processSubmission(submission: Submission): Promise<boolean> {
-  try {
-    console.log(`=== Starting to process submission: ${submission.id} ===`);
+// --------------------------------------
+// 🔹 Process an incoming submission end-to-end
+// --------------------------------------
+async function processSubmission(submission: Submission): Promise<void> {
+  console.log(`Processing submission: ${submission.jobId}`);
 
-    // Split content into chunks
-    console.log("Splitting content into chunks...");
+  const redisKey = `deal:${submission.jobId}`;
+  await redisClient.hset(redisKey, { status: "Processing" });
+
+  try {
     const chunks = await splitContentIntoChunks(submission.screenerContent);
-    console.log(`Content split into ${chunks.length} chunks`);
 
     if (chunks.length === 0) {
-      console.warn("No content chunks generated - submission will be skipped");
-      return false;
+      console.warn("No content chunks generated for submission");
+      await redisClient.hset(redisKey, { status: "Done", result: "Failed" });
+      await sendNotification(submission.userId, submission.title, "Failed");
+      return;
     }
 
-    // Process chunks
-    console.log("Processing content chunks...");
     const summaries = await processContentChunks(chunks, submission);
     const combinedSummary = summaries.join("\n\n=== Next Section ===\n\n");
-    console.log(
-      `Combined summary length: ${combinedSummary.length} characters`
-    );
 
-    // Generate final result
-    console.log("Generating final AI screening result...");
     const finalResult = await generateFinalSummary(combinedSummary);
     if (!finalResult) {
-      console.error(
-        "Failed to generate final summary - submission processing failed"
-      );
-      return false;
+      console.error("Failed to generate final AI result");
+      await redisClient.hset(redisKey, { status: "Done", result: "Failed" });
+      await sendNotification(submission.userId, submission.title, "Failed");
+      return;
     }
 
-    // Save to database
-    console.log("Saving result to database...");
-    const saveSuccess = await saveAIScreeningResult(
-      submission.id,
-      finalResult,
-      combinedSummary
-    );
+    await saveAIScreeningResult(submission.id, finalResult, combinedSummary);
 
-    if (saveSuccess) {
-      console.log(
-        "Database save successful, publishing completion notification..."
-      );
-      console.log(`=== Submission ${submission.id} processed successfully ===`);
-      return true;
-    } else {
-      console.error("Database save failed - submission processing incomplete");
-      return false;
-    }
-  } catch (error) {
-    console.error(`=== Error processing submission ${submission.id}:`, error);
-    return false;
+    await redisClient.hset(redisKey, { status: "Done", result: "Success" });
+    await sendNotification(submission.userId, submission.title, "Success");
+
+    console.log(`✅ Submission ${submission.jobId} processed successfully`);
+  } catch (err) {
+    console.error(`Error processing submission ${submission.jobId}:`, err);
+    await redisClient.hset(redisKey, { status: "Done", result: "Failed" });
+    await sendNotification(submission.userId, submission.title, "Failed");
   }
 }
 
-async function start() {
-  const redis = createClient({ url: process.env.REDIS_URL });
-  redis.on("error", (e) => console.error("Redis error", e));
-  await redis.connect();
-  // ✅ We still connect to Redis to publish "done" notifications
-  console.log("Worker connected to Redis for publishing completion.");
+// --------------------------------------
+// 🔹 Pub/Sub handler → Triggered when new job is published
+// --------------------------------------
+app.post("/", async (req, res) => {
+  try {
+    const pubsubMessage = req.body.message;
+    if (!pubsubMessage) return res.status(400).send("No message provided");
 
-  const port = Number(process.env.PORT) || 8080;
+    const dataStr = Buffer.from(pubsubMessage.data, "base64").toString();
 
-  const server = http.createServer(async (req, res) => {
-    if (req.url === "/health") {
-      res.writeHead(200, { "Content-Type": "text/plain" }).end("OK");
-      return;
+    // --------------------------------------
+    // 🔹 Parse and validate payload with Zod
+    // --------------------------------------
+    const parsed = submissionSchema.safeParse(JSON.parse(dataStr));
+    if (!parsed.success) {
+      console.error("Invalid submission payload", parsed.error);
+      return res.status(400).send("Invalid payload");
+    }
+    const payload: Submission = parsed.data;
+
+    console.log(
+      "Received Pub/Sub message:",
+      pubsubMessage.attributes?.jobType,
+      "→ Job ID:",
+      payload.jobId
+    );
+
+    await processSubmission(payload);
+
+    res.status(204).send();
+  } catch (err) {
+    console.error("Error handling Pub/Sub message:", err);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
+// --------------------------------------
+// ✅ Test Notification Endpoint
+// --------------------------------------
+app.post("/notify", async (req, res) => {
+  try {
+    const { userId, title, status } = req.body;
+
+    if (!userId || !title) {
+      return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // ✅ This is the endpoint our Next.js app will "poke"
-    if (req.method === "POST" && req.url === "/process-queue") {
-      console.log("Received trigger. Starting to process Redis queue...");
+    console.log("📩 Received test /notify request:", req.body);
 
-      try {
-        let itemsProcessed = 0;
-        // ✅ Loop until the queue is empty
-        while (true) {
-          const item = await redis.lPop(QUEUE);
+    // Publish message to Redis so your WebSocket worker receives it
+    await redisClient.publish(
+      "notifications",
+      JSON.stringify({ userId, title, status })
+    );
 
-          if (item) {
-            // If we got an item, process it
-            const submission: Submission = JSON.parse(item);
-            await processSubmission(submission);
-            itemsProcessed++;
-          } else {
-            // If item is null, the queue is empty, so we stop.
-            console.log("Queue is empty.");
-            break;
-          }
-        }
+    res.status(200).json({ message: "Notification published to Redis" });
+  } catch (err) {
+    console.error("Error in /notify:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
 
-        res
-          .writeHead(200)
-          .end(`Processing complete. Items processed: ${itemsProcessed}`);
-      } catch (err) {
-        console.error("An error occurred while processing the queue:", err);
-        res.writeHead(500).end("Failed to process queue");
-      }
-      return;
-    }
+// --------------------------------------
+// 🔹 Health check endpoint
+// --------------------------------------
+app.get("/health", (_, res) => {
+  res.status(200).send("OK");
+});
 
-    res.writeHead(404).end("Not Found");
-  });
-
-  server.listen(port, () =>
-    console.log(`Worker HTTP server listening for Pub/Sub events on :${port}`)
-  );
-
-  // ❌ REMOVED: The entire `while(true)` loop with `redis.brPop` is gone.
-}
-// async function start() {
-//   const redis = createClient({ url: process.env.REDIS_URL });
-//   redis.on("error", (e) => console.error("Redis error", e));
-//   await redis.connect();
-//   console.log("Worker connected to Redis");
-
-//   // Start a simple HTTP server for Cloud Run health checks
-//   const port = Number(process.env.PORT) || 8080;
-//   const server = http.createServer((req, res) => {
-//     if (!req.url) return;
-//     if (req.url === "/health" || req.url === "/") {
-//       res.writeHead(200, { "Content-Type": "text/plain" });
-//       res.end("OK");
-//     } else {
-//       res.writeHead(404, { "Content-Type": "text/plain" });
-//       res.end("Not Found");
-//     }
-//   });
-
-//   server.listen(port, () =>
-//     console.log(`Worker HTTP server listening on :${port}`)
-//   );
-
-//   while (true) {
-//     try {
-//       console.log("Waiting for items with BRPOP on:", QUEUE);
-//       const res = await redis.brPop(QUEUE, 0);
-//       if (!res) continue;
-//       const item = res.element;
-//       let submission: Submission;
-//       try {
-//         submission = JSON.parse(item);
-//       } catch {
-//         console.error("Invalid JSON item, skipping");
-//         continue;
-//       }
-
-//       console.log("Received and parsed submission", submission);
-
-//       // Minimal "processing" step (replace with real work)
-
-//       await processSubmission(submission);
-
-//       // Publish completion notification
-//       await redis.publish(
-//         DONE_CHANNEL,
-//         JSON.stringify({
-//           userId: submission.userId,
-//           productId: submission.id,
-//           status: "done",
-//           productName: submission.title || submission.id,
-//         })
-//       );
-//     } catch (e) {
-//       console.error("Worker loop error", e);
-//       await new Promise((r) => setTimeout(r, 1000));
-//     }
-//   }
-// }
-
-start().catch((e) => {
-  console.error("Worker failed to start", e);
-  process.exit(1);
+// --------------------------------------
+// 🔹 Start Express server
+// --------------------------------------
+const port = process.env.PORT || 8080;
+app.listen(port, () => {
+  console.log(`Worker listening for Pub/Sub events on port ${port}`);
 });
