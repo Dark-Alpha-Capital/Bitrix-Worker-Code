@@ -49,6 +49,32 @@ router.post("/screen-deal", async (req: Request, res: Response) => {
       jobType,
     });
 
+    // Deduplication: prevent reprocessing Pub/Sub retries or duplicate events
+    const messageId: string | undefined = req.body?.message?.messageId;
+    const dedupKey = messageId ? `pubsub:processed:${messageId}` : null;
+    const jobKey = `job:${jobId}:processed`;
+
+    // If either the message or job has already been processed, skip
+    const [hasMessage, hasJob] = await Promise.all([
+      dedupKey ? redis.exists(dedupKey) : Promise.resolve(0),
+      redis.exists(jobKey),
+    ]);
+
+    if ((dedupKey && hasMessage === 1) || hasJob === 1) {
+      console.log(
+        `⚠️ Duplicate detected for job ${jobId}${
+          messageId ? ` or message ${messageId}` : ""
+        }`
+      );
+      return res.status(204).send();
+    }
+
+    // Atomically set dedup markers with expirations
+    const multi = redis.multi();
+    if (dedupKey) multi.set(dedupKey, "1", "EX", 3600); // 1 hour for message id
+    multi.set(jobKey, "1", "EX", 86400); // 24 hours for job id
+    await multi.exec();
+
     // Update status to processing
     await redis.hset(`job:${jobId}`, "status", "processing");
     console.log(`📝 Updated job ${jobId} status to processing in Redis`);
