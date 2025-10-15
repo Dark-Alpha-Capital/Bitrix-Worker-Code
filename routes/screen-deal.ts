@@ -2,7 +2,7 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { screenDealPayloadSchema } from "../lib/schemas/screen-deal-payload-schema";
 import redis from "../lib/redis";
-import { processSubmission } from "../screener";
+import { evaluateDealAndSaveResult } from "../lib/actions/evaluate-deal";
 
 const router = Router();
 
@@ -18,6 +18,7 @@ router.post("/screen-deal", async (req: Request, res: Response) => {
     return res.status(503).json({ error: "Redis not ready" });
   }
 
+  let jobId: string | null = null;
   try {
     const pubsubMessage = req.body.message;
     if (!pubsubMessage) return res.status(400).send("no message");
@@ -31,8 +32,14 @@ router.post("/screen-deal", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Invalid payload" });
     }
 
-    const { jobId, dealId, screenerId, userId, jobType } =
-      validatedPayload.data;
+    const {
+      jobId: parsedJobId,
+      dealId,
+      screenerId,
+      userId,
+      jobType,
+    } = validatedPayload.data;
+    jobId = parsedJobId;
 
     console.log(`🚀 Starting job processing:`, {
       jobId,
@@ -54,11 +61,32 @@ router.post("/screen-deal", async (req: Request, res: Response) => {
       processingUpdate
     );
 
-    // Simulate processing time
-    const delaySeconds = Math.floor(Math.random() * 11) + 5;
-    console.log(`⏱️ Processing job ${jobId} for ${delaySeconds} seconds...`);
-    await new Promise((resolve) => setTimeout(resolve, delaySeconds * 1000));
+    const evaluationResult = await evaluateDealAndSaveResult(
+      dealId,
+      screenerId
+    );
 
+    if (!evaluationResult.success) {
+      console.error(
+        "❌ Failed to evaluate deal and save result:",
+        evaluationResult.message
+      );
+      // Mark job as failed and publish update
+      await redis.hset(`job:${jobId}`, "status", "failed");
+      await redis.publish(
+        "job-updates",
+        JSON.stringify({
+          jobId,
+          status: "failed",
+          error: evaluationResult.message,
+        })
+      );
+      console.log(`📡 Published failure update for job ${jobId}`);
+      return res
+        .status(500)
+        .json({ error: evaluationResult.message || "Evaluation failed" });
+    }
+    console.log(`⏱️ Processing job ${jobId}...`);
     // Update status to done
     await redis.hset(`job:${jobId}`, "status", "done");
     console.log(`📝 Updated job ${jobId} status to done in Redis`);
@@ -75,11 +103,6 @@ router.post("/screen-deal", async (req: Request, res: Response) => {
 
     // Try to publish error status if we have jobId
     try {
-      const jobId = req.body.message
-        ? JSON.parse(Buffer.from(req.body.message.data, "base64").toString())
-            .jobId
-        : null;
-
       if (jobId) {
         await redis.hset(`job:${jobId}`, "status", "failed");
         await redis.publish(
