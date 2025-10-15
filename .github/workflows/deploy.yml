@@ -25,14 +25,9 @@ jobs:
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: ${{ env.PROJECT_ID }}
 
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker us-central1-docker.pkg.dev
-
-      - name: Authorize Docker push
-        run: gcloud auth configure-docker
 
       - name: Build and push Docker image
         run: |
@@ -43,23 +38,13 @@ jobs:
         run: |
           gcloud run deploy ${{ env.SERVICE_NAME }} \
             --image us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/bitrix24/bitrix-worker:${{ github.sha }} \
-            --platform managed \
             --region ${{ env.REGION }} \
-            --set-env-vars "REDIS_URL=${{ secrets.REDIS_URL }},NODE_ENV=production,DATABASE_URL=${{ secrets.DATABASE_URL }},AI_API_KEY=${{ secrets.AI_API_KEY }},REDIS_URL=${{ secrets.REDIS_URL }}" \
-            --timeout=900s \
-            --port=8080 \
-            --cpu=1 \
-            --memory=1Gi \
-            --min-instances=0 \
-            --max-instances=5 \
-            --concurrency=80 \
-            --execution-environment=gen2 \
-            --cpu-boost \
-            --use-http2 \
-            --allow-unauthenticated \
+            --set-env-vars "NODE_ENV=production,REDIS_URL=${{ secrets.REDIS_URL }},DATABASE_URL=${{ secrets.DATABASE_URL }},AI_API_KEY=${{ secrets.AI_API_KEY }}" \
+            --memory=2Gi \
+            --allow-unauthenticated
 
-      - name: Wait for deployment
+      - name: Verify deployment
         run: |
           gcloud run services describe ${{ env.SERVICE_NAME }} \
             --region ${{ env.REGION }} \
-            --format="value(status.conditions[0].status)"
+            --format="value(status.url)"

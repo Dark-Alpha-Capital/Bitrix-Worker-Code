@@ -27,35 +27,34 @@ Set these environment variables in your Cloud Run service:
 - `NODE_ENV`: Set to `production`
 - `PORT`: Port number (default: 8080)
 
-### Deploy using Cloud Build
+### Required GitHub Secrets
 
-```bash
-# Build and deploy using Cloud Build
-gcloud builds submit --config cloudbuild.yaml
-```
+Before deploying, make sure these secrets are configured in your GitHub repository:
+
+- `GCP_SA_KEY`: Google Cloud Service Account JSON key
+- `REDIS_URL`: Redis connection URL
+- `DATABASE_URL`: Database connection URL
+- `AI_API_KEY`: AI API key
+
+### Automatic Deployment (Recommended)
+
+The service is automatically deployed using GitHub Actions when you push to the `main` branch.
 
 ### Manual Deployment
 
 ```bash
 # Build the Docker image
-docker build -t gcr.io/YOUR_PROJECT_ID/bitrix-worker .
+docker build -t us-central1-docker.pkg.dev/dark-alpha-deal-sourcing/bitrix24/bitrix-worker:latest .
 
-# Push to Container Registry
-docker push gcr.io/YOUR_PROJECT_ID/bitrix-worker
+# Push to Artifact Registry
+docker push us-central1-docker.pkg.dev/dark-alpha-deal-sourcing/bitrix24/bitrix-worker:latest
 
 # Deploy to Cloud Run
 gcloud run deploy bitrix-worker \
-  --image gcr.io/YOUR_PROJECT_ID/bitrix-worker \
+  --image us-central1-docker.pkg.dev/dark-alpha-deal-sourcing/bitrix24/bitrix-worker:latest \
   --region us-central1 \
-  --platform managed \
-  --allow-unauthenticated \
-  --port 8080 \
   --memory 2Gi \
-  --cpu 2 \
-  --max-instances 10 \
-  --min-instances 0 \
-  --concurrency 80 \
-  --timeout 900s
+  --allow-unauthenticated
 ```
 
 ## Endpoints
