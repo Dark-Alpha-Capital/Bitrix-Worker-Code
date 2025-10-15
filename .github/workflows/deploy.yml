@@ -45,7 +45,7 @@ jobs:
             --image us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/bitrix24/bitrix-worker:${{ github.sha }} \
             --platform managed \
             --region ${{ env.REGION }} \
-            --set-env-vars "REDIS_URL=${{ secrets.REDIS_URL }},NODE_ENV=production,DATABASE_URL=${{ secrets.DATABASE_URL }},AI_API_KEY=${{ secrets.AI_API_KEY }}" \
+            --set-env-vars "REDIS_URL=${{ secrets.REDIS_URL }},NODE_ENV=production,DATABASE_URL=${{ secrets.DATABASE_URL }},AI_API_KEY=${{ secrets.AI_API_KEY }},REDIS_URL=${{ secrets.REDIS_URL }}" \
             --timeout=900s \
             --port=8080 \
             --cpu=1 \
