@@ -6,6 +6,9 @@ import redis from "../lib/redis";
 const router = Router();
 
 router.post("/screen-deal", async (req: Request, res: Response) => {
+  if (!redis) {
+    return res.status(503).json({ error: "Redis not configured" });
+  }
   try {
     const pubsubMessage = req.body.message;
     if (!pubsubMessage) return res.status(400).send("no message");
