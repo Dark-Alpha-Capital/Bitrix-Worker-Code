@@ -2,13 +2,22 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { screenDealPayloadSchema } from "../lib/schemas/screen-deal-payload-schema";
 import redis from "../lib/redis";
+import { processSubmission } from "../screener";
 
 const router = Router();
 
 router.post("/screen-deal", async (req: Request, res: Response) => {
   if (!redis) {
+    console.error("Redis not configured");
     return res.status(503).json({ error: "Redis not configured" });
   }
+
+  // Check Redis connection status
+  if (redis.status !== "ready") {
+    console.error("Redis not ready, status:", redis.status);
+    return res.status(503).json({ error: "Redis not ready" });
+  }
+
   try {
     const pubsubMessage = req.body.message;
     if (!pubsubMessage) return res.status(400).send("no message");

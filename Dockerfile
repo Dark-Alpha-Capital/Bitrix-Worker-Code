@@ -1,17 +1,17 @@
 # Use the official Bun image
-FROM oven/bun:1.1.13
+FROM oven/bun:1.1.13-alpine
 
 # Set the working directory inside the container
 WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
+RUN apk add --no-cache \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    ca-certificates
 
 # Copy package files and install dependencies
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
+RUN bun install --frozen-lockfile --production
 
 # Copy Prisma schema and generate client
 COPY prisma ./prisma/
@@ -21,8 +21,9 @@ RUN bun run prisma:generate
 COPY . .
 
 
-# Expose the port
+
 EXPOSE 8080
+
 
 
 # Start the worker using Bun with production script

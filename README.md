@@ -1,15 +1,99 @@
-# worker
+# Bitrix Worker
 
-To install dependencies:
+A Bun-based worker for processing deal screenings and handling Pub/Sub messages in Google Cloud Run.
+
+## Features
+
+- Express.js server with proper error handling
+- Redis connection management with retry logic
+- Graceful shutdown handling for Cloud Run
+- Health check endpoints
+- Queue processing for deal screenings
+- AI-powered deal evaluation
+
+## Deployment to Google Cloud Run
+
+### Prerequisites
+
+1. Google Cloud SDK installed
+2. Docker installed
+3. Redis instance (Cloud Memorystore or external Redis)
+
+### Environment Variables
+
+Set these environment variables in your Cloud Run service:
+
+- `REDIS_URL`: Redis connection string
+- `NODE_ENV`: Set to `production`
+- `PORT`: Port number (default: 8080)
+
+### Deploy using Cloud Build
 
 ```bash
+# Build and deploy using Cloud Build
+gcloud builds submit --config cloudbuild.yaml
+```
+
+### Manual Deployment
+
+```bash
+# Build the Docker image
+docker build -t gcr.io/YOUR_PROJECT_ID/bitrix-worker .
+
+# Push to Container Registry
+docker push gcr.io/YOUR_PROJECT_ID/bitrix-worker
+
+# Deploy to Cloud Run
+gcloud run deploy bitrix-worker \
+  --image gcr.io/YOUR_PROJECT_ID/bitrix-worker \
+  --region us-central1 \
+  --platform managed \
+  --allow-unauthenticated \
+  --port 8080 \
+  --memory 2Gi \
+  --cpu 2 \
+  --max-instances 10 \
+  --min-instances 0 \
+  --concurrency 80 \
+  --timeout 900s
+```
+
+## Endpoints
+
+- `GET /` - Root endpoint
+- `GET /health` - Health check with Redis status
+- `POST /screen-deal` - Process Pub/Sub messages for deal screening
+- `POST /process-queue` - Process Redis queue items
+- `POST /file-upload` - Handle file uploads
+
+## Troubleshooting
+
+### 503 Connection Termination Errors
+
+The following fixes have been implemented to resolve 503 errors:
+
+1. **Graceful Shutdown**: Proper handling of SIGTERM/SIGINT signals
+2. **Redis Connection Management**: Improved connection handling with retry logic
+3. **Error Boundaries**: Comprehensive error handling middleware
+4. **Health Checks**: Proper health check endpoints for Cloud Run
+5. **Resource Management**: Proper cleanup of connections and resources
+
+### Common Issues
+
+1. **Redis Connection Issues**: Ensure `REDIS_URL` is properly set and accessible
+2. **Memory Issues**: Increase memory allocation if processing large deals
+3. **Timeout Issues**: Increase timeout settings for long-running operations
+
+## Development
+
+```bash
+# Install dependencies
 bun install
+
+# Start development server
+bun run start
+
+# Run Prisma commands
+bun run prisma:generate
+bun run prisma:migrate
 ```
-
-To run:
-
-```bash
-bun run index.ts
-```
-
-This project was created using `bun init` in bun v1.2.8. [Bun](https://bun.sh) is a fast all-in-one JavaScript runtime.

@@ -233,62 +233,13 @@ async function processSubmission(submission: Submission): Promise<boolean> {
   }
 }
 
-async function start() {
-  const redis = createClient({ url: process.env.REDIS_URL });
-  redis.on("error", (e) => console.error("Redis error", e));
-  await redis.connect();
-  // ✅ We still connect to Redis to publish "done" notifications
-  console.log("Worker connected to Redis for publishing completion.");
+// Note: This file contains utility functions for processing submissions.
+// The main server is now handled by index.ts using Express.js
+// These functions can be imported and used by route handlers.
 
-  const port = Number(process.env.PORT) || 8080;
-
-  const server = http.createServer(async (req, res) => {
-    if (req.url === "/health") {
-      res.writeHead(200, { "Content-Type": "text/plain" }).end("OK");
-      return;
-    }
-
-    // ✅ This is the endpoint our Next.js app will "poke"
-    if (req.method === "POST" && req.url === "/process-queue") {
-      console.log("Received trigger. Starting to process Redis queue...");
-
-      try {
-        let itemsProcessed = 0;
-        // ✅ Loop until the queue is empty
-        while (true) {
-          const item = await redis.lPop(QUEUE);
-
-          if (item) {
-            // If we got an item, process it
-            const submission: Submission = JSON.parse(item);
-            await processSubmission(submission);
-            itemsProcessed++;
-          } else {
-            // If item is null, the queue is empty, so we stop.
-            console.log("Queue is empty.");
-            break;
-          }
-        }
-
-        res
-          .writeHead(200)
-          .end(`Processing complete. Items processed: ${itemsProcessed}`);
-      } catch (err) {
-        console.error("An error occurred while processing the queue:", err);
-        res.writeHead(500).end("Failed to process queue");
-      }
-      return;
-    }
-
-    res.writeHead(404).end("Not Found");
-  });
-
-  server.listen(port, () =>
-    console.log(`Worker HTTP server listening for Pub/Sub events on :${port}`)
-  );
-}
-
-start().catch((e) => {
-  console.error("Worker failed to start", e);
-  process.exit(1);
-});
+export {
+  processSubmission,
+  processContentChunks,
+  generateFinalSummary,
+  saveAIScreeningResult,
+};
